@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TCP vs UDP</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1b1f24; --muted: #5b6470;
+    --border: #dfe3e8; --tcp: #2563eb; --udp: #d97706; --rudp: #059669; --bad: #dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --card: #181b21; --text: #e6e8eb; --muted: #9aa3ad;
+      --border: #2a2f37; --tcp: #60a5fa; --udp: #fbbf24; --rudp: #34d399; --bad: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  main { max-width: 1000px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p { margin: 0; }
+  .sub, .muted { color: var(--muted); }
+  .sub { margin-bottom: 20px; }
+  section + section { margin-top: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  .card h2 { margin: 0 0 12px; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  dl { margin: 0; display: grid; gap: 6px 12px; }
+  .stats { grid-template-columns: 1fr auto; }
+  .stats dt { color: var(--muted); }
+  .stats dd { margin: 0; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stats dd.bad { color: var(--bad); }
+  .note { color: var(--muted); font-size: 13px; margin-top: 12px; }
+  button { padding: 8px 14px; border: 1px solid var(--border); background: var(--card); color: var(--text);
+           border-radius: 8px; cursor: pointer; font: inherit; }
+  button[aria-pressed="true"] { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .context { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+  .context .title { font-weight: 600; margin-bottom: 10px; }
+  .ctx { grid-template-columns: max-content 1fr; }
+  .ctx dt { color: var(--muted); }
+  .ctx dd { margin: 0; }
+  @media (max-width: 640px) { .ctx { grid-template-columns: 1fr; } .ctx dd { margin-bottom: 6px; } }
+  .controls { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border);
+              display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; align-items: end; }
+  label { display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+  input[type=range] { width: 100%; accent-color: var(--tcp); }
+  .verdict { display: grid; grid-template-columns: 132px 1fr; gap: 12px; align-items: start; }
+  .verdict + .verdict { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+  .verdict.alt { opacity: 0.85; }
+  .verdict .app { margin-bottom: 4px; }
+  @media (max-width: 640px) { .verdict { grid-template-columns: 1fr; gap: 6px; } }
+  .badge { display: inline-block; text-align: center; padding: 6px 10px; border-radius: 8px; font-weight: 700;
+           border: 2px solid currentColor; }
+  .badge.tcp { color: var(--tcp); } .badge.udp { color: var(--udp); }
+  .badge.tie { color: var(--muted); } .badge.none { color: var(--bad); }
+  .rudp-line { margin-top: 8px; padding-left: 10px; border-left: 3px solid var(--rudp); }
+  .rudp-line b { color: var(--rudp); }
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+  canvas { width: 100%; height: 240px; display: block; }
+</style>
+</head>
+<body>
+<main>
+  <h1>TCP vs UDP: monitoramento de sensores</h1>
+  <p class="sub">As mesmas leituras chegam por TCP, por UDP e por UDP confiável, numa rede simulada. <span id="status">Conectando…</span></p>
+
+  <section class="card">
+    <h2>Cenários da vida real</h2>
+    <div class="chips" id="chips"></div>
+    <div class="context" id="context"></div>
+    <div class="controls">
+      <label>Perda de pacotes: <b id="loss-v"></b><input id="loss" type="range" min="0" max="30" step="1"></label>
+      <label>Atraso base: <b id="delay-v"></b><input id="delay" type="range" min="0" max="300" step="5"></label>
+      <label>Variação do atraso (jitter): <b id="jitter-v"></b><input id="jitter" type="range" min="0" max="200" step="5"></label>
+      <button id="reset" type="button">Zerar estatísticas</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Quem está ganhando</h2>
+    <div id="verdict"></div>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <h2><span class="dot" style="background: var(--tcp)"></span>TCP</h2>
+      <dl class="stats" id="tcp-stats"></dl>
+      <p class="note">Retransmite o que se perde e entrega em ordem. Nada some, mas um pacote perdido segura todos os seguintes (head-of-line blocking).</p>
+    </div>
+    <div class="card">
+      <h2><span class="dot" style="background: var(--udp)"></span>UDP</h2>
+      <dl class="stats" id="udp-stats"></dl>
+      <p class="note">Não retransmite nem ordena. O que se perde some, mas o resto chega sem esperar ninguém.</p>
+    </div>
+    <div class="card">
+      <h2><span class="dot" style="background: var(--rudp)"></span>UDP confiável</h2>
+      <dl class="stats" id="rudp-stats"></dl>
+      <p class="note">UDP com confirmação (ACK) e retransmissão, sem ordem. Reenvia o que se perde, mas uma leitura perdida não segura as outras. Desiste depois de 500 ms, porque leitura velha não serve mais. É a ideia por trás do QUIC (HTTP/3).</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Latência nos últimos 60 s</h2>
+    <div class="legend">
+      <span style="color: var(--tcp)">━ TCP média</span><span style="color: var(--tcp)">┅ TCP p95</span>
+      <span style="color: var(--udp)">━ UDP média</span><span style="color: var(--udp)">┅ UDP p95</span>
+      <span style="color: var(--rudp)">━ UDP confiável média</span><span style="color: var(--rudp)">┅ UDP confiável p95</span>
+    </div>
+    <canvas id="chart"></canvas>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const PROTOS = ["tcp", "udp", "rudp"];
+const HISTORY = 120; // snapshots every 0.5 s -> 60 s
+const VERDICT_SPAN = 20; // snapshots averaged by the verdict -> 10 s
+const ms = v => v.toFixed(1) + " ms";
+
+// cfg = [loss %, base delay ms, jitter ms]. needs: "all" = every reading
+// matters, "fresh" = only the newest reading matters.
+const SCENARIOS = [
+  { name: "LAN cabeada", cfg: [0, 5, 0],
+    context: "Caixas de supermercado ligados por cabo ao servidor da loja.",
+    main: { app: "registro de vendas do caixa", needs: "all" },
+    alt: { app: "câmera de segurança ao vivo na mesma rede", needs: "fresh" },
+    watch: "As três colunas ficam praticamente iguais.",
+    real: "Sistemas de caixa e bancos de dados usam TCP. Numa rede assim, as garantias do TCP não custam nada, por isso ele é a escolha padrão." },
+  { name: "Servidor distante", cfg: [0, 300, 0],
+    context: "Rede limpa, mas o servidor fica em outro continente, do outro lado de um cabo submarino.",
+    main: { app: "site ou API hospedados nos EUA", needs: "all" },
+    alt: { app: "jogo online num servidor dos EUA", needs: "fresh" },
+    watch: "Os dois ficam em ~300 ms. Latência alta, sozinha, não separa os protocolos.",
+    real: "Trocar de protocolo não encurta o cabo. Jogos resolvem distância com servidores regionais, não com UDP." },
+  { name: "Fibra / 4G bom", cfg: [1, 30, 10],
+    context: "Fábrica conectada por fibra, com perdas raras.",
+    main: { app: "monitoramento de máquinas (temperatura, vibração)", needs: "all" },
+    alt: { app: "videochamada na mesma conexão", needs: "fresh" },
+    watch: "O UDP perde ~1%. O TCP não perde nada; só a latência máxima tem picos.",
+    real: "Protocolos industriais como Modbus TCP e MQTT rodam sobre TCP: um alarme perdido custa mais que alguns milissegundos de atraso." },
+  { name: "Wi-Fi com fila", cfg: [2, 20, 120],
+    context: "Wi-Fi de casa enquanto alguém baixa um arquivo grande: o atraso varia muito e, quando a fila do roteador enche, pacotes são descartados.",
+    main: { app: "chamada de voz", needs: "fresh" },
+    alt: { app: "mensagens de chat", needs: "all" },
+    watch: "O UDP perde um pouco e entrega fora de ordem. O TCP mantém tudo em ordem, mas trava a cada perda. (Só com jitter, sem perda, os dois quase empatam: teste com perda 0.)",
+    real: "Voz trafega em RTP sobre UDP, com um buffer de jitter no app que reordena os pacotes. Esperar uma retransmissão, como o TCP faz, trava a fala." },
+  { name: "Wi-Fi congestionado", cfg: [5, 50, 40],
+    context: "Wi-Fi de um evento ou de um campus lotado.",
+    main: { app: "jogo multiplayer de ação", needs: "fresh" },
+    alt: { app: "atualização de firmware de um dispositivo IoT", needs: "all" },
+    watch: "É o ponto de virada: o vencedor depende da aplicação.",
+    real: "Jogos de ação usam UDP, porque uma posição velha é inútil. Firmware vai por TCP (HTTPS, MQTT), porque um byte perdido corrompe o binário." },
+  { name: "Rural / satélite", cfg: [15, 300, 100],
+    context: "Drone ou trator no campo, conectado por rádio ou satélite.",
+    main: { app: "telemetria do drone (posição, bateria)", needs: "fresh" },
+    alt: { app: "envio do relatório de colheita do dia", needs: "all" },
+    watch: "As retransmissões do TCP se acumulam e a latência máxima vai a segundos.",
+    real: "Drones costumam mandar telemetria por UDP (por exemplo, MAVLink): a próxima posição chega em instantes, então perder uma não faz falta." },
+  { name: "Rede em colapso", cfg: [30, 50, 20],
+    context: "Estádio lotado, ou rede danificada depois de um desastre.",
+    main: { app: "mensagem de emergência", needs: "all" },
+    alt: { app: "vídeo ao vivo do local", needs: "fresh" },
+    watch: "O TCP praticamente para; o UDP perde quase 1 em cada 3 leituras.",
+    real: "Nenhum protocolo conserta uma rede quebrada. Sistemas de emergência usam outros caminhos, como SMS e rádio." },
+];
+const GENERIC = [
+  { app: "uma aplicação em que cada leitura importa", needs: "all" },
+  { app: "uma aplicação em que só a leitura mais recente importa", needs: "fresh" },
+];
+const NEEDS = { all: "cada leitura importa", fresh: "só a leitura mais recente importa" };
+const LABEL = { tcp: "TCP vence", udp: "UDP vence", tie: "Empate", none: "Ninguém vence" };
+
+// Verdict rules. udp = UDP snapshot; tcpLat/udpLat = {avg, p95, max} averaged
+// over 10 s. Max matters: at low loss TCP stalls hit < 5% of readings, so they
+// hide from p95, yet a stall is exactly what freezes a call or a game.
+function judge(needs, udp, tcpLat, udpLat) {
+  const extra = Math.max(0, tcpLat.avg - udpLat.avg, tcpLat.max - udpLat.max); // what TCP pays
+  const loss = `${udp.lost} leituras (${udp.loss_pct.toFixed(1)} %)`;
+  if (udp.loss_pct > 20 && tcpLat.p95 > 500) return { winner: "none",
+    why: `O TCP entrega tudo, mas com ${ms(tcpLat.p95)} de atraso no p95, e o UDP perdeu ${loss}. O problema é a rede, não o protocolo.` };
+  if (needs === "all") {
+    if (udp.lost > 0) return { winner: "tcp",
+      why: `O UDP perdeu ${loss}, e aqui cada uma faz falta. O TCP entregou todas, pagando ${ms(extra)} a mais de atraso, que essa aplicação tolera.` };
+    if (udp.out_of_order > 0) return { winner: "tcp",
+      why: `Nada se perdeu, mas o UDP entregou ${udp.out_of_order} leituras fora de ordem. O TCP garante a ordem sem o app precisar fazer nada.` };
+    return { winner: "tie",
+      why: "Nenhuma perda e nenhuma leitura fora de ordem: os dois entregaram o mesmo. Na dúvida fica o TCP, porque as garantias saem de graça." };
+  }
+  if (extra >= 20) return { winner: "udp",
+    why: `O TCP chegou a travar ${ms(extra)} a mais que o UDP, porque espera retransmissões e segura as leituras seguintes até a perdida chegar (head-of-line blocking). `
+       + (udp.lost ? `O UDP perdeu ${loss}, mas a próxima leitura chega em 50 ms.` : "O UDP não espera ninguém.")
+       + (udp.out_of_order ? ` O app só precisa descartar as ${udp.out_of_order} leituras que chegaram fora de ordem.` : "") };
+  if (udp.lost > 0) return { winner: "tcp",
+    why: `O atraso extra do TCP é pequeno (${ms(extra)}), então não perder nada sai quase de graça. O UDP perdeu ${loss}.` };
+  return { winner: "tie", why: "Mesma latência e nenhuma perda: com a rede assim, tanto faz o protocolo." };
+}
+{ // self-check of the rules (see the browser console)
+  const u = (lost, loss_pct, out_of_order) => ({ lost, loss_pct, out_of_order });
+  const l = (avg, p95, max) => ({ avg, p95, max });
+  console.assert(judge("all", u(5, 2, 0), l(80, 300, 400), l(30, 40, 45)).winner === "tcp");
+  console.assert(judge("fresh", u(5, 2, 0), l(80, 300, 400), l(30, 40, 45)).winner === "udp");
+  console.assert(judge("fresh", u(1, 1, 0), l(40, 41, 240), l(37, 40, 42)).winner === "udp"); // stall hidden from p95
+  console.assert(judge("fresh", u(5, 2, 0), l(31, 35, 50), l(30, 32, 45)).winner === "tcp");
+  console.assert(judge("fresh", u(0, 0, 0), l(30, 31, 33), l(30, 31, 33)).winner === "tie");
+  console.assert(judge("all", u(0, 0, 4), l(90, 140, 150), l(80, 130, 150)).winner === "tcp");
+  console.assert(judge("all", u(90, 30, 0), l(900, 2000, 3000), l(60, 70, 80)).winner === "none");
+}
+
+// Where reliable UDP stands for the same application. It is judged on average
+// latency, not max: a retransmitted reading arrives late on its own, but unlike
+// TCP it does not hold back the readings behind it.
+function judgeRudp(needs, udp, rudp, tcpLat, udpLat, rudpLat) {
+  if (needs === "all") {
+    if (rudp.lost > 0) return { label: "Não serve",
+      why: `Desistiu de ${rudp.lost} leituras que passaram de 500 ms sem confirmação. Aqui cada uma faz falta, então o TCP é a ferramenta certa.` };
+    if (rudp.out_of_order > 0) return { label: "Serve, com ressalva",
+      why: `Entregou tudo, mas ${rudp.out_of_order} leituras chegaram fora de ordem: o app teria que reordenar.` };
+    return { label: "Serve nesta rede",
+      why: "Não perdeu nada, mas só porque nenhuma leitura passou de 500 ms. Numa rede pior ele desiste; o TCP não." };
+  }
+  if (udp.lost === 0) return { label: "Igual ao UDP",
+    why: "Sem perdas, não há o que retransmitir: ele se comporta como UDP puro." };
+  const rudpExtra = Math.max(0, rudpLat.avg - udpLat.avg), tcpExtra = Math.max(0, tcpLat.avg - udpLat.avg);
+  // Losses are random, so it must recover a real share of UDP's losses, not win by noise.
+  if (rudp.lost > 0.8 * udp.lost) {
+    const roundTrip = 2 * udpLat.avg; // reading out + ACK back over the same network
+    return { label: "Não ajudou",
+      why: `Perdeu ${rudp.lost} leituras contra ${udp.lost} do UDP. ` + (roundTrip > 500
+        ? `A ida e volta (~${Math.round(roundTrip)} ms) passa do limite de 500 ms: a leitura expira antes de o sensor descobrir que ela se perdeu.`
+        : "As retransmissões não chegaram dentro do limite de 500 ms.") };
+  }
+  if (rudpExtra <= Math.max(5, tcpExtra / 2)) return { label: "Melhor opção",
+    why: `Perdeu ${rudp.lost} leituras contra ${udp.lost} do UDP, recuperando o resto, e pagou só ${ms(rudpExtra)} de atraso médio a mais que o UDP (o TCP pagou ${ms(tcpExtra)}), porque uma leitura perdida não segura as outras.` };
+  return { label: "Meio-termo",
+    why: `Perdeu menos que o UDP (${rudp.lost} contra ${udp.lost}), mas pagou ${ms(rudpExtra)} de atraso médio a mais, perto do custo do TCP (${ms(tcpExtra)}).` };
+}
+{ // self-check of the reliable-UDP rules
+  const u = (lost, out_of_order = 0) => ({ lost, out_of_order });
+  const l = avg => ({ avg, p95: avg, max: avg });
+  console.assert(judgeRudp("all", u(10), u(3), l(80), l(30), l(35)).label === "Não serve");
+  console.assert(judgeRudp("all", u(10), u(0), l(80), l(30), l(35)).label === "Serve nesta rede");
+  console.assert(judgeRudp("fresh", u(10), u(2), l(80), l(30), l(33)).label === "Melhor opção");
+  console.assert(judgeRudp("fresh", u(10), u(2), l(40), l(30), l(39)).label === "Meio-termo");
+  console.assert(judgeRudp("fresh", u(10), u(12), l(80), l(30), l(33)).label === "Não ajudou");
+  console.assert(judgeRudp("fresh", u(153), u(151), l(446), l(356), l(357)).why.includes("expira")); // rural: RTT > 500 ms
+  console.assert(judgeRudp("fresh", u(0), u(0), l(30), l(30), l(30)).label === "Igual ao UDP");
+}
+
+// Stats tables
+const FIELDS = [
+  ["received", "Recebidas", v => v],
+  ["lost", "Perdidas", v => v],
+  ["loss_pct", "Perda", v => v.toFixed(1) + " %"],
+  ["out_of_order", "Fora de ordem", v => v],
+  ["duplicates", "Duplicadas (descartadas)", v => v],
+  ["rate", "Taxa", v => v.toFixed(0) + " msg/s"],
+  ["lat_avg_ms", "Latência média", ms],
+  ["lat_p95_ms", "Latência p95", ms],
+  ["lat_max_ms", "Latência máx.", ms],
+  ["jitter_ms", "Jitter", ms],
+];
+const BAD_WHEN_POSITIVE = new Set(["lost", "loss_pct", "out_of_order"]);
+for (const p of PROTOS) {
+  for (const [key, label] of FIELDS) {
+    const dt = document.createElement("dt");
+    const dd = document.createElement("dd");
+    dt.textContent = label;
+    dd.id = `${p}-${key}`;
+    $(`${p}-stats`).append(dt, dd);
+  }
+}
+
+// Scenarios
+let active = null; // selected scenario, null = manual sliders
+function renderScenarios() {
+  $("chips").replaceChildren(...SCENARIOS.map(s => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = s.name;
+    b.setAttribute("aria-pressed", s === active);
+    b.addEventListener("click", () => applyScenario(s));
+    return b;
+  }));
+  $("context").innerHTML = active ? `
+    <p class="title">${active.name}: ${active.context}</p>
+    <dl class="ctx">
+      <dt>Aplicação</dt><dd>${active.main.app} (${NEEDS[active.main.needs]})</dd>
+      <dt>Contraponto</dt><dd>${active.alt.app} (${NEEDS[active.alt.needs]})</dd>
+      <dt>O que observar</dt><dd>${active.watch}</dd>
+      <dt>Na vida real</dt><dd>${active.real}</dd>
+    </dl>`
+    : `<p class="muted">Escolha um cenário, ou ajuste a rede à mão nos controles abaixo.</p>`;
+}
+async function applyScenario(s) {
+  active = s;
+  renderScenarios();
+  const [loss, delay_ms, jitter_ms] = s.cfg;
+  await postConfig({ loss: loss / 100, delay_ms, jitter_ms });
+  await resetStats();
+}
+
+// Network controls
+const postConfig = cfg => fetch("/config", { method: "POST", body: JSON.stringify(cfg) });
+async function resetStats() {
+  await fetch("/reset", { method: "POST" });
+  renderVerdict(null); // history is cleared when the new epoch arrives
+}
+function showLabels() {
+  $("loss-v").textContent = $("loss").value + " %";
+  $("delay-v").textContent = $("delay").value + " ms";
+  $("jitter-v").textContent = $("jitter").value + " ms";
+}
+function setSliders(cfg) {
+  $("loss").value = Math.round(cfg.loss * 100);
+  $("delay").value = cfg.delay_ms;
+  $("jitter").value = cfg.jitter_ms;
+  showLabels();
+}
+for (const id of ["loss", "delay", "jitter"]) {
+  $(id).addEventListener("input", showLabels);
+  $(id).addEventListener("change", () => {
+    active = null; // a manual change leaves the scenario
+    renderScenarios();
+    postConfig({ loss: $("loss").value / 100, delay_ms: +$("delay").value, jitter_ms: +$("jitter").value });
+  });
+}
+$("reset").addEventListener("click", resetStats);
+
+// Verdict
+const mean = xs => xs.reduce((a, b) => a + b, 0) / xs.length;
+function recentLatency(p) {
+  const h = hist[p].slice(-VERDICT_SPAN);
+  return { avg: mean(h.map(x => x[0])), p95: mean(h.map(x => x[1])), max: mean(h.map(x => x[2])) };
+}
+function renderVerdict(snap) {
+  if (!snap || hist.tcp.length < 6) {
+    $("verdict").innerHTML = `<p class="muted">Coletando dados… o veredito aparece em alguns segundos e fica mais estável depois de ~10 s.</p>`;
+    return;
+  }
+  const tcpLat = recentLatency("tcp"), udpLat = recentLatency("udp"), rudpLat = recentLatency("rudp");
+  $("verdict").innerHTML = (active ? [active.main, active.alt] : GENERIC).map((a, i) => {
+    const v = judge(a.needs, snap.udp, tcpLat, udpLat);
+    const r = judgeRudp(a.needs, snap.udp, snap.rudp, tcpLat, udpLat, rudpLat);
+    return `<div class="verdict${i ? " alt" : ""}">
+      <span class="badge ${v.winner}">${LABEL[v.winner]}</span>
+      <div><p class="app">${i ? "Já para" : "Para"} <b>${a.app}</b> <span class="muted">(${NEEDS[a.needs]})</span></p>
+      <p>${v.why}</p>
+      <p class="rudp-line"><b>UDP confiável: ${r.label}.</b> ${r.why}</p></div></div>`;
+  }).join("");
+}
+
+// Live data
+const hist = { tcp: [], udp: [], rudp: [] };
+let epoch = null;
+const events = new EventSource("/events");
+events.onopen = () => { $("status").textContent = "Ao vivo."; };
+events.onerror = () => { $("status").textContent = "Desconectado, tentando de novo…"; };
+events.onmessage = e => {
+  const snap = JSON.parse(e.data);
+  // Stats were reset (here or in another tab). Clearing on the server's epoch,
+  // not on click, keeps a snapshot sent just before the reset out of the history.
+  if (snap.epoch !== epoch) {
+    epoch = snap.epoch;
+    for (const p of PROTOS) hist[p] = [];
+  }
+  for (const p of PROTOS) {
+    for (const [key, , fmt] of FIELDS) {
+      const dd = $(`${p}-${key}`);
+      dd.textContent = fmt(snap[p][key]);
+      dd.classList.toggle("bad", BAD_WHEN_POSITIVE.has(key) && snap[p][key] > 0);
+    }
+    hist[p].push([snap[p].lat_avg_ms, snap[p].lat_p95_ms, snap[p].lat_max_ms]);
+    if (hist[p].length > HISTORY) hist[p].shift();
+  }
+  // Follow the server's config (another tab may change it) unless the user is on a slider.
+  if (document.activeElement?.type !== "range") setSliders(snap.config);
+  renderVerdict(snap);
+  draw();
+};
+
+// Chart
+function draw() {
+  const canvas = $("chart");
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  const g = canvas.getContext("2d");
+  g.scale(dpr, dpr);
+  const css = getComputedStyle(document.documentElement);
+  const color = name => css.getPropertyValue(name).trim();
+  const left = 52, bottom = h - 8, plotH = h - 20;
+  const top = Math.max(50, ...PROTOS.flatMap(p => hist[p].flatMap(pt => [pt[0], pt[1]]))) * 1.1; // max is not drawn
+  const y = v => bottom - plotH * v / top;
+
+  g.font = "12px system-ui, sans-serif";
+  g.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const v = top * i / 4;
+    g.strokeStyle = color("--border");
+    g.beginPath(); g.moveTo(left, y(v)); g.lineTo(w, y(v)); g.stroke();
+    g.fillStyle = color("--muted");
+    g.fillText(Math.round(v) + " ms", 0, y(v) + 4);
+  }
+  for (const p of PROTOS) {
+    g.strokeStyle = color("--" + p);
+    for (const [idx, dash, width] of [[0, [], 2.5], [1, [4, 4], 1.5]]) {
+      g.setLineDash(dash);
+      g.lineWidth = width;
+      g.beginPath();
+      hist[p].forEach((pt, i) => {
+        const x = left + (w - left) * i / (HISTORY - 1);
+        i ? g.lineTo(x, y(pt[idx])) : g.moveTo(x, y(pt[idx]));
+      });
+      g.stroke();
+    }
+  }
+  g.setLineDash([]);
+}
+window.addEventListener("resize", draw);
+renderScenarios();
+renderVerdict(null);
+</script>
+</body>
+</html>
