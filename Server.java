@@ -57,6 +57,11 @@ public class Server {
     // (1000 + 1000 ms after Config.clean).
     static final double GRACE = 2.5;
     static final int MAX_GAP = 1000;   // largest seq jump tracked as individual gaps
+    // Readings come from the network, so senders and gaps are capped: whoever can reach the ports
+    // could otherwise invent run/sensor ids and seq jumps until memory runs out.
+    static final int MAX_SENSORS = 20_000;  // tracked senders per protocol (the benchmark uses 5,000)
+    static final int MAX_MISSING = 200_000; // open gaps per protocol
+    static final int MAX_LINE = 256;        // a TCP reading is ~45 chars; a longer line closes the connection
     // One thread per sensor: an OS thread by default, a virtual thread with -Dvirtual=true (Benchmark compares both).
     static final Thread.Builder PER_SENSOR_THREADS = Boolean.getBoolean("virtual") ? Thread.ofVirtual() : Thread.ofPlatform();
 
@@ -156,6 +161,7 @@ public class Server {
         void add(Reading r, double arrival) {
             SensorKey key = new SensorKey(r.run(), r.sensor());
             Long top = maxSeq.get(key);
+            if (top == null && maxSeq.size() >= MAX_SENSORS) return; // a new sender beyond the cap is ignored
             boolean newest = top == null || r.seq() > top;
             Long first = firstSeq.get(key);
             boolean beforeFirst = first != null && r.seq() < first; // sent right after a reset, overtaken by a later one
@@ -165,7 +171,7 @@ public class Server {
             }
             if (newest) {
                 if (top != null) { // cap the gap: seq comes from the network
-                    for (long gap = Math.max(top + 1, r.seq() - MAX_GAP); gap < r.seq(); gap++) {
+                    for (long gap = Math.max(top + 1, r.seq() - MAX_GAP); gap < r.seq() && missing.size() < MAX_MISSING; gap++) {
                         missing.put(new Gap(key, gap), arrival);
                     }
                 }
@@ -174,7 +180,7 @@ public class Server {
             } else {
                 outOfOrder++; // a late reading filling a gap
                 if (beforeFirst) { // the readings between it and the old first are now expected too
-                    for (long gap = Math.max(r.seq() + 1, first - MAX_GAP); gap < first; gap++) {
+                    for (long gap = Math.max(r.seq() + 1, first - MAX_GAP); gap < first && missing.size() < MAX_MISSING; gap++) {
                         missing.put(new Gap(key, gap), arrival);
                     }
                     firstSeq.put(key, r.seq());
@@ -393,7 +399,7 @@ public class Server {
         long connEpoch = epoch;
         Queue<Reading> pending = new ConcurrentLinkedQueue<>();
         try (socket; BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream(), UTF_8))) {
-            for (String line; (line = in.readLine()) != null; ) { // framing: one reading per line
+            for (String line; (line = readLine(in)) != null; ) { // framing: one reading per line
                 Reading r = Reading.parse(line);
                 if (r == null) continue;
                 if (connEpoch != epoch) {
@@ -415,6 +421,17 @@ public class Server {
         }
     }
 
+    /** readLine with a length cap: BufferedReader.readLine would buffer an endless line from the network. */
+    static String readLine(BufferedReader in) throws IOException {
+        StringBuilder line = new StringBuilder();
+        for (int c; (c = in.read()) != -1; ) {
+            if (c == '\n') return line.toString();
+            if (c != '\r') line.append((char) c);
+            if (line.length() > MAX_LINE) throw new IOException("line longer than " + MAX_LINE + " chars");
+        }
+        return line.isEmpty() ? null : line.toString();
+    }
+
     // ---- Dashboard --------------------------------------------------------
 
     private static final Pattern NUMBER_FIELD = Pattern.compile("\"(\\w+)\"\\s*:\\s*([-+\\w.]+)");
@@ -429,6 +446,18 @@ public class Server {
 
     static void handleHttp(HttpExchange ex) throws IOException {
         try {
+            // Only our own origin: any other Host means DNS rebinding (an outside page reaching us by name).
+            String host = ex.getRequestHeaders().getFirst("Host");
+            if (!("localhost:" + HTTP_PORT).equals(host) && !("127.0.0.1:" + HTTP_PORT).equals(host)) {
+                send(ex, 403, "text/plain", "forbidden host".getBytes(UTF_8));
+                return;
+            }
+            // A JSON body forces a CORS preflight, which we never answer, so other sites cannot POST here (CSRF).
+            String type = ex.getRequestHeaders().getFirst("Content-Type");
+            if (ex.getRequestMethod().equals("POST") && (type == null || !type.startsWith("application/json"))) {
+                send(ex, 415, "text/plain", "expected Content-Type: application/json".getBytes(UTF_8));
+                return;
+            }
             switch (ex.getRequestMethod() + " " + ex.getRequestURI().getPath()) {
                 case "GET /" -> send(ex, 200, "text/html; charset=utf-8", Files.readAllBytes(Path.of("dashboard.html")));
                 case "GET /events" -> streamEvents(ex);

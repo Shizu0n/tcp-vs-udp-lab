@@ -104,7 +104,8 @@ public class Benchmark {
     }
 
     static void post(String path, String body) throws Exception {
-        HttpRequest req = HttpRequest.newBuilder(URI.create(BASE + path)).POST(HttpRequest.BodyPublishers.ofString(body)).build();
+        HttpRequest req = HttpRequest.newBuilder(URI.create(BASE + path)).header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body)).build();
         int status = http.send(req, HttpResponse.BodyHandlers.discarding()).statusCode();
         if (status != 204) throw new IllegalStateException(path + " returned " + status);
     }

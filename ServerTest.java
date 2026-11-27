@@ -112,6 +112,30 @@ public class ServerTest {
         fast.sample(1_000_000L);
         check("a valid sample ends the backoff", fast.nanos() < 2 * (1_000_000L + Sensor.Rto.G));
 
+        // Untrusted input caps: an endless TCP line, invented senders, huge seq gaps
+        try {
+            java.io.BufferedReader in = new java.io.BufferedReader(new java.io.StringReader("1;0;1;1;25\r\nlast"));
+            check("bounded readLine reads lines", "1;0;1;1;25".equals(Server.readLine(in)) && "last".equals(Server.readLine(in))
+                    && Server.readLine(in) == null);
+        } catch (java.io.IOException e) {
+            check("bounded readLine reads lines", false);
+        }
+        try {
+            Server.readLine(new java.io.BufferedReader(new java.io.StringReader("x".repeat(Server.MAX_LINE + 1))));
+            check("endless line is rejected", false);
+        } catch (java.io.IOException e) {
+            check("endless line is rejected", true);
+        }
+        Server.Stats flood = new Server.Stats();
+        for (int i = 0; i <= Server.MAX_SENSORS; i++) flood.add(new Server.Reading(1, i, 0, 10_000_000, 25), 10.05);
+        check("invented senders are capped", flood.maxSeq.size() == Server.MAX_SENSORS);
+        Server.Stats gaps = new Server.Stats();
+        for (int i = 0; i < Server.MAX_MISSING / Server.MAX_GAP + 5; i++) {
+            gaps.add(new Server.Reading(2, i, 0, 10_000_000, 25), 10.05);
+            gaps.add(new Server.Reading(2, i, 1_000_000, 10_000_000, 25), 10.05);
+        }
+        check("open gaps are capped", gaps.missing.size() == Server.MAX_MISSING);
+
         // Delivery scheduler: due order, ties in arrival order
         Server.Network network = new Server.Network();
         Thread runner = new Thread(network);

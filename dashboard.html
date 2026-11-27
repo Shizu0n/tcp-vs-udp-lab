@@ -304,9 +304,12 @@ async function applyScenario(s) {
 }
 
 // Network controls
-const postConfig = cfg => fetch("/config", { method: "POST", body: JSON.stringify(cfg) });
+// The server only accepts JSON POSTs (its CSRF guard), so the header is required.
+const post = (path, body = {}) =>
+  fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+const postConfig = cfg => post("/config", cfg);
 async function resetStats() {
-  await fetch("/reset", { method: "POST" });
+  await post("/reset");
   renderVerdict(null); // history is cleared when the new epoch arrives
 }
 function showLabels() {
